@@ -9,6 +9,7 @@ Autofoundry is a CLI companion to [Karpathy's autoresearch](https://github.com/k
 - **RunPod** — Secure and Community cloud
 - **Vast.ai** — Global GPU marketplace
 - **PRIME Intellect** — Decentralized GPU network
+- **Lambda Labs** — On-demand cloud GPUs
 
 ## Quickstart
 
@@ -17,10 +18,10 @@ Autofoundry is a CLI companion to [Karpathy's autoresearch](https://github.com/k
 uv sync
 
 # First run — configure API keys and SSH key path
-uv run autofoundry your_experiment.sh
+uv run autofoundry run your_experiment.sh
 
 # Subsequent runs use saved config
-uv run autofoundry your_experiment.sh --num-experiments 4 --gpu-type H100
+uv run autofoundry run your_experiment.sh --num 4 --gpu H100
 ```
 
 On first run, Autofoundry walks you through configuring provider API keys and your SSH key path. Config is saved to `~/.config/autofoundry/config.toml`.
@@ -28,7 +29,7 @@ On first run, Autofoundry walks you through configuring provider API keys and yo
 ## How It Works
 
 ```
-autofoundry train.sh --num-experiments 4 --gpu-type H100
+autofoundry run train.sh --num 4 --gpu H100
 ```
 
 1. **Query providers** — Fetches real-time GPU pricing and availability across all configured providers
@@ -56,45 +57,69 @@ echo "training_seconds: 300"
 
 Autofoundry aggregates these across all experiment runs in the final report.
 
-## Example: autoresearch
+## Pre-building Images
+
+For faster provisioning, pre-bake your dependencies into a Docker image:
 
 ```bash
-uv run autofoundry scripts/run_autoresearch.sh
+uv run autofoundry build scripts/setup_autoresearch.sh --tag youruser/autoresearch:latest
+uv run autofoundry run scripts/run_autoresearch.sh --image youruser/autoresearch:latest
 ```
 
-This provisions an H100, clones autoresearch, trains a 50M parameter language model, and reports metrics including validation BPB, MFU, and throughput.
+## Resuming Sessions
 
-## CLI Options
+If a session is interrupted, resume it to restart stopped instances and run remaining experiments:
+
+```bash
+uv run autofoundry run script.sh --resume <session-id>
+```
+
+## CLI Reference
 
 ```
-autofoundry <script> [OPTIONS]
+autofoundry run <script> [OPTIONS]
 
 Arguments:
   script              Path to experiment shell script
 
 Options:
-  --num-experiments   Number of experiment runs (default: 1)
-  --gpu-type          GPU type to search for (default: H100)
-  --resume            Resume a previous session
+  --num, -n           Number of experiment runs (default: 1)
+  --gpu, -g           GPU type to search for (default: H100)
+  --resume, -r        Resume a previous session
+  --image, -i         Custom Docker image
+
+autofoundry build <setup_script> [OPTIONS]
+
+Arguments:
+  setup_script        Path to setup shell script
+
+Options:
+  --tag, -t           Docker image tag (required)
+  --base, -b          Base Docker image
 ```
 
 ## Architecture
 
 ```
-cli.py           Entry point and interactive flow
+cli.py           Entry point — run and build commands
 planner.py       GPU offer querying and selection
 provisioner.py   Instance lifecycle management
 executor.py      SSH-based script upload and execution
 reporter.py      Metrics aggregation and display
-providers/       Provider API implementations (RunPod, Vast.ai, PRIME Intellect)
-models.py        Data models (GpuOffer, InstanceConfig, InstanceInfo)
+providers/       Provider API implementations
+models.py        Data models (GpuOffer, InstanceConfig, Session)
 config.py        TOML configuration management
-theme.py         Terminal styling and terminology
-state.py         Session state persistence
+state.py         SQLite session persistence
+theme.py         Terminal styling
+image_builder.py Docker image pre-building
 ```
 
 ## Requirements
 
 - Python 3.11+
 - SSH key pair (ed25519 or RSA)
-- At least one provider API key (RunPod, Vast.ai, or PRIME Intellect)
+- At least one provider API key (RunPod, Vast.ai, PRIME Intellect, or Lambda Labs)
+
+## License
+
+[MIT](LICENSE)

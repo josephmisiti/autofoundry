@@ -1,7 +1,7 @@
 # Autofoundry
 
-CLI companion to Karpathy's autoresearch. Run ANY ML experiment script across GPUs on multiple cloud providers.
-`autofoundry <script>` → pick GPUs → provision → execute → stream output → report metrics → teardown.
+CLI tool to run ML experiment scripts across GPUs on multiple cloud providers.
+`autofoundry run <script>` → pick GPUs → provision → execute → stream output → report metrics → teardown.
 
 ## Architecture
 
@@ -9,11 +9,24 @@ CLI companion to Karpathy's autoresearch. Run ANY ML experiment script across GP
 cli.py → planner.py → provisioner.py → executor.py → reporter.py
 ```
 
-- **Models**: `src/autofoundry/models.py` — GpuOffer, InstanceConfig, InstanceInfo, ProvisioningPlan
+- **CLI**: `src/autofoundry/cli.py` — `run` and `build` commands via Typer
+- **Models**: `src/autofoundry/models.py` — GpuOffer, InstanceConfig, InstanceInfo, Session
 - **Config**: `src/autofoundry/config.py` — TOML config at `~/.config/autofoundry/config.toml`
-- **Providers**: `src/autofoundry/providers/{runpod,vastai,primeintellect}.py`
+- **Providers**: `src/autofoundry/providers/{runpod,vastai,primeintellect,lambdalabs}.py`
 - **Theme**: `src/autofoundry/theme.py` — NGE-inspired terminal aesthetic ("sorties", "units", "supply lines")
-- **State**: `src/autofoundry/state.py` — Session persistence
+- **State**: `src/autofoundry/state.py` — SQLite-backed session persistence (WAL mode)
+- **Image Builder**: `src/autofoundry/image_builder.py` — Docker image build/push for pre-baking dependencies
+
+## CLI Commands
+
+- `autofoundry run <script>` — Main flow: configure → plan → provision → execute → report → teardown
+  - `--num/-n`: Number of experiments
+  - `--gpu/-g`: GPU type filter
+  - `--resume/-r`: Resume a previous session
+  - `--image/-i`: Custom Docker image
+- `autofoundry build <setup_script>` — Pre-build Docker image with dependencies
+  - `--tag/-t`: Docker image tag (required)
+  - `--base/-b`: Base Docker image
 
 ## Provider API Details
 
@@ -31,7 +44,7 @@ cli.py → planner.py → provisioner.py → executor.py → reporter.py
 ### Vast.ai
 - Response uses `"bundles"` key (not `"offers"`)
 - Uses `api_key` as query param
-- GPU name filtering must be client-side (substring match), not exact match
+- GPU name filtering must be client-side (substring match via `_find_gpu_variants`), not exact match
 - Provider image: `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404`
 
 ### PRIME Intellect
@@ -41,18 +54,33 @@ cli.py → planner.py → provisioner.py → executor.py → reporter.py
 - Null safety: use `str(item.get("field") or "")` for metadata dict values (Pydantic rejects None in `dict[str, str]`)
 - Provider image: `cuda_12_4_pytorch_2_4`
 
+### Lambda Labs
+- REST API at `https://cloud.lambdalabs.com/api/v1` with Basic auth
+- SSH key management: register or reuse existing keys
+- Region-based availability (each region is a separate offer)
+- Parses VRAM from instance description with regex
+- Ubuntu-based images (pre-configured, not Docker)
+
 ## SSH Execution
-- `executor.py` uses subprocess SSH/SCP (not asyncssh)
+- `executor.py` uses subprocess SSH/SCP (not asyncssh, despite the dependency)
 - `BatchMode=yes` + `PasswordAuthentication=no` prevent password prompt hangs
-- `-tt` flag forces PTY for line-buffered remote output streaming
 - SSH retry loop (10 attempts, 5s delay) before upload — key auth can lag behind port availability
 - Metadata passthrough: `GpuOffer.metadata` → `InstanceConfig.metadata` → provider's `create_instance`
 
-## Test Script
-- `reference/scripts/run_autoresearch.sh` — clones autoresearch, installs uv, runs prepare.py + train.py
+## Session Persistence
+- SQLite at `~/.config/autofoundry/sessions/{session_id}.db`
+- Tables: session, instances, experiments, results, events
+- Session states: CONFIGURING → PLANNING → PROVISIONING → RUNNING → REPORTING → COMPLETED/FAILED/PAUSED
+- Resume support: `--resume` flag restarts stopped instances and runs pending experiments
+
+## Test Scripts
+- `scripts/run_autoresearch.sh` — Runs autoresearch (assumes pre-built image with deps)
+- `scripts/run_autoresearch_full.sh` — Full setup + run from scratch
+- `scripts/setup_autoresearch.sh` — Setup only (for image building)
 - Script outputs `---` delimiter followed by `key: value` metrics, parsed by `executor.parse_metrics()`
 
 ## Status
 - RunPod: fully working (provision, execute, stream, report, teardown) ✓
 - Vast.ai: GPU listing works, provisioning untested
 - PRIME Intellect: GPU listing works (inventory fluctuates), provisioning untested
+- Lambda Labs: GPU listing works, provisioning untested
