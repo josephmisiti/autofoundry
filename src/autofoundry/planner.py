@@ -416,11 +416,22 @@ def interactive_plan(
     # Let user select
     selections: list[tuple[GpuOffer, int]] = []
 
+    default_pick = "1"
+    for i, o in enumerate(offers, 1):
+        if "a100" in o.gpu_type.lower() and "sxm" in o.gpu_type.lower() and o.region and "secure" in o.region.lower():
+            default_pick = str(i)
+            break
+    else:
+        for i, o in enumerate(offers, 1):
+            if o.region and "secure" in o.region.lower():
+                default_pick = str(i)
+                break
+
     while True:
         if not selections:
             pick = Prompt.ask(
                 f"  [af.label]Select {TERMS['instance'].lower()} #[/af.label]",
-                default="1",
+                default=default_pick,
             )
         else:
             # Show current plan and ask to confirm or add more

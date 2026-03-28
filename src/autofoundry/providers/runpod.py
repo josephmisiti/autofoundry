@@ -38,6 +38,70 @@ class RunPodProvider:
             timeout=30.0,
         )
         self._ssh_key_synced = False
+        self._user_id: str = ""
+
+    def _get_user_id(self) -> str:
+        if self._user_id:
+            return self._user_id
+        gql_headers = {"Authorization": f"Bearer {self._api_key}"}
+        resp = httpx.post(
+            self.GRAPHQL_URL,
+            json={"query": "query { myself { id } }"},
+            headers=gql_headers,
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        myself = resp.json().get("data", {}).get("myself") or {}
+        self._user_id = myself.get("id", "")
+        return self._user_id
+
+    def _get_pod_ssh_proxy(self, pod_id: str) -> SshConnectionInfo | None:
+        """Query GraphQL for the pod's SSH proxy connection string."""
+        gql_headers = {"Authorization": f"Bearer {self._api_key}"}
+        query = """
+        query Pod($podId: String!) {
+            pod(input: { podId: $podId }) {
+                id
+                runtime {
+                    uptimeInSeconds
+                    ports { ip isIpPublic privatePort publicPort type }
+                }
+                machine { podHostId }
+            }
+        }
+        """
+        try:
+            resp = httpx.post(
+                self.GRAPHQL_URL,
+                json={"query": query, "variables": {"podId": pod_id}},
+                headers=gql_headers,
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            pod = (data.get("data") or {}).get("pod") or {}
+
+            runtime = pod.get("runtime")
+            if not runtime:
+                return None
+
+            ports = runtime.get("ports") or []
+            for p in ports:
+                if p.get("privatePort") == 22 and p.get("isIpPublic"):
+                    return SshConnectionInfo(
+                        host=p["ip"], port=int(p["publicPort"]), username="root"
+                    )
+
+            pod_host_id = (pod.get("machine") or {}).get("podHostId", "")
+            if pod_host_id:
+                proxy_user = pod_host_id if pod_id in pod_host_id else f"{pod_id}-{pod_host_id}"
+                return SshConnectionInfo(
+                    host="ssh.runpod.io", port=22, username=proxy_user
+                )
+        except Exception:
+            pass
+
+        return None
 
     def _ensure_ssh_key(self, public_key: str) -> None:
         """Register SSH public key in RunPod account settings via GraphQL."""
@@ -308,11 +372,15 @@ class RunPodProvider:
 
         ssh = None
         public_ip = pod.get("publicIp")
+
         if public_ip:
-            # RunPod maps container port 22 to a random host port
             port_mappings = pod.get("portMappings") or {}
             ssh_port = int(port_mappings.get("22", 22))
             ssh = SshConnectionInfo(host=public_ip, port=ssh_port, username="root")
+        elif status in (InstanceStatus.RUNNING, InstanceStatus.STARTING):
+            gql_ssh = self._get_pod_ssh_proxy(instance_id)
+            if gql_ssh:
+                ssh = gql_ssh
 
         return InstanceInfo(
             provider=ProviderName.RUNPOD,

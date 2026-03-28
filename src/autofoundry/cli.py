@@ -85,6 +85,7 @@ def _resolve_script(script_arg: str | None, config: Config) -> str:
         raise SystemExit(1)
 
     # Try last-used script as default, fall back to bundled example
+    default = ""
     default_abs = config.last_script if config.last_script else ""
     if default_abs:
         # Show as relative path if under cwd, otherwise absolute

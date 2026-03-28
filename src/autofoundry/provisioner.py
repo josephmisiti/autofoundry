@@ -189,7 +189,6 @@ def _provision_one(
                 )
                 last_status = status_str
             elif poll_count % 6 == 0:
-                # Heartbeat every ~6 polls so the user knows we're still waiting
                 console.print(
                     f"  [af.muted]{label} [{display}] still {status_str}{ssh_indicator} ({elapsed}s)[/af.muted]"
                 )

@@ -40,13 +40,21 @@ def _ssh_opts(ssh_key_path: str) -> list[str]:
     ]
 
 
+def _is_proxy_ssh(ssh: SshConnectionInfo) -> bool:
+    """Check if this SSH connection uses a provider proxy (no SCP support)."""
+    return ssh.host == "ssh.runpod.io"
+
+
 def upload_script(
     ssh: SshConnectionInfo,
     local_path: str,
     ssh_key_path: str,
     remote_path: str = "/tmp/run_experiment.sh",
 ) -> bool:
-    """Upload a script to the remote instance via scp."""
+    """Upload a script to the remote instance via scp (or ssh pipe for proxies)."""
+    if _is_proxy_ssh(ssh):
+        return _upload_via_ssh_pipe(ssh, local_path, ssh_key_path, remote_path)
+
     scp_cmd = [
         "scp",
         *_ssh_opts(ssh_key_path),
@@ -62,6 +70,50 @@ def upload_script(
     if result.returncode != 0 and result.stderr:
         print_error(f"SCP: {result.stderr.strip()}")
     return result.returncode == 0
+
+
+def _upload_via_ssh_pipe(
+    ssh: SshConnectionInfo,
+    local_path: str,
+    ssh_key_path: str,
+    remote_path: str,
+) -> bool:
+    """Upload a file by base64-encoding and decoding over SSH (for proxies that don't support SCP)."""
+    import base64
+    with open(local_path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("ascii")
+
+    ssh_base = [
+        "ssh",
+        *_ssh_opts(ssh_key_path),
+        "-p", str(ssh.port),
+        f"{ssh.username}@{ssh.host}",
+    ]
+
+    cmd = f"echo '{encoded}' | base64 -d > {remote_path}"
+    try:
+        result = subprocess.run(
+            [*ssh_base, cmd],
+            capture_output=True, text=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        print_error("SSH upload timed out after 60s")
+        return False
+    if result.returncode != 0:
+        if result.stderr:
+            print_error(f"SSH upload: {result.stderr.strip()}")
+        return False
+
+    verify = subprocess.run(
+        [*ssh_base, f"wc -c < {remote_path}"],
+        capture_output=True, text=True, timeout=15,
+    )
+    local_size = os.path.getsize(local_path)
+    remote_size = int(verify.stdout.strip()) if verify.returncode == 0 and verify.stdout.strip().isdigit() else 0
+    if remote_size != local_size:
+        print_error(f"Upload verification failed: local={local_size}B, remote={remote_size}B")
+        return False
+    return True
 
 
 def _remote_env_prefix() -> str:
@@ -111,6 +163,8 @@ def run_remote(
         line = _ANSI_RE.sub("", line).rstrip("\n")
         if not line:
             continue
+        if "doesn't support PTY" in line:
+            continue
         lines.append(line)
         if on_line:
             on_line(unit_label, line)
@@ -154,7 +208,6 @@ def execute_experiment(
 
     unit_label = f"UNIT-{unit_num:02d}"
 
-    # Verify SSH connectivity (SSH daemon can take minutes to start on some providers)
     max_attempts = 30
     retry_delay = 10
     for attempt in range(max_attempts):
@@ -171,7 +224,7 @@ def execute_experiment(
             break
         detail = ""
         if test and test.stderr:
-            detail = f" ({test.stderr.strip()})"
+            detail = f" ({test.stderr.strip().splitlines()[-1]})"
         elif test is None:
             detail = " (timeout)"
         if attempt < max_attempts - 1:
@@ -213,7 +266,7 @@ def execute_experiment(
     exit_code, lines = run_remote(
         ssh,
         ssh_key_path,
-        "chmod +x /tmp/run_experiment.sh && stdbuf -oL /tmp/run_experiment.sh",
+        "chmod +x /tmp/run_experiment.sh && bash -e /tmp/run_experiment.sh 2>&1",
         unit_label,
         on_line=on_line,
     )
